@@ -22,6 +22,8 @@ from vllm.model_executor.models.qwen3_5 import (
     Qwen3VLMultiModalProcessor,
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY
+from vllm.transformers_utils.configs.qwen3_5 import Qwen3_5Config
+from vllm.transformers_utils.configs.qwen3_5_moe import Qwen3_5MoeConfig
 
 import ttnn
 from models.demos.blackhole.qwen36.tt.common import create_tt_model
@@ -34,6 +36,13 @@ _BLOCK_SIZE = 64
 
 
 class TT_Qwen3_5ProcessingInfo(Qwen3_5ProcessingInfo):
+    def get_hf_config(self):
+        # Base Qwen3_5ProcessingInfo.get_hf_config() hardcodes Qwen3_5Config (dense 27B), but
+        # this one TT wrapper serves both dense and MoE (35B-A3B) checkpoints -- the same split
+        # upstream makes with its separate Qwen3_5MoeProcessingInfo/Qwen3_5MoeConfig for the MoE
+        # checkpoint. Accept either config type here rather than forking the processing-info class.
+        return self.ctx.get_hf_config((Qwen3_5Config, Qwen3_5MoeConfig))
+
     def get_supported_mm_limits(self) -> Mapping[str, Optional[int]]:
         # Serve a single visual item per request (B=1, max_concurrency=1). Image and video are both
         # supported, but only ONE modality per request: the model's vision splice keys off a single
