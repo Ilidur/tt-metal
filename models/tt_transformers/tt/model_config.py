@@ -2934,6 +2934,15 @@ class ModelArgs:
                         params = json.load(f)
                     self.ffn_dim_multiplier = params["ffn_dim_multiplier"]
                     self.multiple_of = params["multiple_of"]
+        elif "moe_intermediate_size" in text_config:
+            # MoE checkpoints (e.g. Qwen3.5-MoE) carry no dense `intermediate_size` at all --
+            # per-expert width lives in `moe_intermediate_size` instead. This value isn't used to
+            # size any actual expert compute (that's driven by the MoE-specific config the model
+            # reads elsewhere); it only satisfies this generic ModelArgs field for callers (e.g.
+            # VisionModelArgs.__init__ chaining into the base text-config parse) that expect it set.
+            self.hidden_dim = text_config["moe_intermediate_size"]
+            self.ffn_dim_multiplier = None
+            self.multiple_of = None
         else:
             self.ffn_dim_multiplier = text_config["ffn_dim_multiplier"]
             self.multiple_of = text_config["multiple_of"]
