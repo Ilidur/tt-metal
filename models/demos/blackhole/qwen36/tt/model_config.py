@@ -148,7 +148,9 @@ class Qwen36ModelArgs(ModelArgs):
         # Native depthwise conv1d (prefill) keeps all qkv_dim_tp channels resident per core (L1_FULL);
         # the 35B-A3B channel count overflows L1 on BH. Split the conv over N channel chunks (exact —
         # depthwise is per-channel-independent) so each call fits. 27B (chunks=1) is unchanged.
-        self.gdn_conv_channel_chunks = 2 if self.moe_num_experts > 0 else 1
+        # BH only: only the BH arm of _conv1d_prefill consumes a chunk list. WH runs one conv over all
+        # channels and needs no split -- 35B-A3B is C=1024/device at TP=8, under the 27B's C=1280 there.
+        self.gdn_conv_channel_chunks = 2 if (self.moe_num_experts > 0 and tpc.is_blackhole()) else 1
         self.gdn_z_dim_tp = self.gdn_z_dim // tp
         self.gdn_qkvz_dim_tp = (self.gdn_qkv_dim + self.gdn_z_dim) // tp
         # Per-device width of the [qkv|z|a|b] fused in-projection. Folding the tiny a/b (decay/beta)
