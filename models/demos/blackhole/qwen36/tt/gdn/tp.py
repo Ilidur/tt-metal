@@ -598,7 +598,14 @@ class TPGatedDeltaNet:
             # Splice: build the fix conv's input HERE, while qkv_rm and conv_state are both certainly
             # alive. Doing it after the big conv would race the `deallocate(xin)` below, which frees
             if _splice:
-                _cs_rm = ttnn.to_layout(conv_state, _rm, memory_config=_dram)
+                # Pre-check the layout (not a post-hoc `is not` on the to_layout result): ttnn.to_layout
+                # can return a different Python wrapper that still aliases the source buffer, which makes
+                # an identity check on its *result* an unreliable signal for whether a copy happened --
+                # deallocating on that unreliable signal frees a buffer still in use (use-after-free,
+                # observed as nondeterministic output on long prompts; see upstream tt-metal 271216b69ca).
+                _cs_rm = (
+                    conv_state if conv_state.layout == _rm else ttnn.to_layout(conv_state, _rm, memory_config=_dram)
+                )
                 _head = ttnn.slice(qkv_rm, (0, 0, 0), (1, tpc.TILE_SIZE, C), memory_config=_dram)
                 _xfix = ttnn.concat([_cs_rm, _head], dim=1, memory_config=_dram)
                 ttnn.deallocate(_head)
@@ -614,7 +621,9 @@ class TPGatedDeltaNet:
                 ttnn.deallocate(pad)
             else:
                 # conv_state arrives TILE (previous chunk's new_state); K-1 rows, cheap to convert.
-                cs_rm = ttnn.to_layout(conv_state, _rm, memory_config=_dram)
+                # Pre-check the layout for the same reason as the _splice branch above: a post-hoc
+                # `is not` on an unconditional to_layout() call is not a reliable no-op signal.
+                cs_rm = conv_state if conv_state.layout == _rm else ttnn.to_layout(conv_state, _rm, memory_config=_dram)
                 xin = ttnn.concat([cs_rm, qkv_rm], dim=1, memory_config=_dram)
                 if cs_rm is not conv_state:
                     ttnn.deallocate(cs_rm)
