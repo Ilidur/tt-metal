@@ -2572,9 +2572,13 @@ class Qwen36Model:
         # Trim the head's vocab padding before the argmax: the pad columns are unmasked, so an
         # argmax over them can silently return an index that is not a token. Trimming in ROW_MAJOR
         # (as _argmax_device does) keeps it off the tiled path.
-        rm = ttnn.to_layout(logits, ttnn.ROW_MAJOR_LAYOUT)
+        # Pre-check the layout instead of calling to_layout unconditionally and checking `is not`
+        # on the result: to_layout can return a different Python wrapper that still aliases the
+        # source buffer, making that check an unreliable no-op signal (the matmul_1d_decode WH fix
+        # in tp_common.py hit this as a hard segfault; the qwen36 GDN carry-tail path hit it as
+        # nondeterministic prefill output -- same bug class, different symptom).
+        rm = logits if logits.layout == ttnn.ROW_MAJOR_LAYOUT else ttnn.to_layout(logits, ttnn.ROW_MAJOR_LAYOUT)
         if rm is not logits:
-            # to_layout on an already-ROW_MAJOR tensor returns the same tensor; do not free it then.
             ttnn.deallocate(logits)
         if int(rm.shape[-1]) != int(self.vocab_size):
             ends = list(rm.shape)
