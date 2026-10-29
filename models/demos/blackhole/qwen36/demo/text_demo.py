@@ -47,6 +47,7 @@ _MESH_SHAPE = {
     "N300": (1, 2),
     "N150x4": (1, 4),
     "T3K": (1, 8),
+    "T3K4": (1, 4),
 }.get(os.environ.get("MESH_DEVICE"), (1, 4))
 _MULTI = _MESH_SHAPE != (1, 1)
 # Multi-device (TP) long-context prefill replays a captured per-chunk trace, so the mesh needs a
@@ -217,12 +218,17 @@ def _blocks_for(seqlen, max_generated_tokens):
         pytest.param(32768, 100, True, 1, 1, id="traced_32k"),
         pytest.param(65536, 500, True, 1, 1, id="traced_64k"),
         pytest.param(131072, 100, True, 1, 1, id="traced_128k"),
-        pytest.param(262144, 100, True, 1, 1, id="traced_256k", marks=pytest.mark.timeout(900)),
+        pytest.param(262144, 100, True, 1, 1, id="traced_256k"),
         # Determinism: re-run the traced 128 case and assert identical output across runs.
         pytest.param(128, 50, True, 1, 2, id="determinism_128"),
         # Batched decode (TP only): B users share one paged KV + batched GDN state.
+        pytest.param(128, 50, True, 4, 1, id="batched_128_b4"),
         pytest.param(128, 50, True, 8, 1, id="batched_128_b8"),
+        pytest.param(128, 50, True, 16, 1, id="batched_128_b16"),
         pytest.param(128, 50, True, 32, 1, id="batched_128_b32"),
+        pytest.param(128, 50, True, 64, 1, id="batched_128_b64"),
+        pytest.param(128, 50, True, 92, 1, id="batched_128_b92"),
+        pytest.param(128, 50, True, 128, 1, id="batched_128_b128"),
         # 128<T<=256 → grouped single-pass at B=2 groups (batched-GDN L1 ceiling for bucket 256).
         pytest.param(256, 50, True, 8, 1, id="batched_256_b8"),
         pytest.param(256, 50, True, 32, 1, id="batched_256_b32"),
@@ -235,9 +241,52 @@ def _blocks_for(seqlen, max_generated_tokens):
         pytest.param(8192, 50, True, 8, 1, id="batched_8k_b8"),
         pytest.param(16384, 50, True, 8, 1, id="batched_16k_b8"),
         pytest.param(32768, 50, True, 8, 1, id="batched_32k_b8"),
+        pytest.param(32768, 50, True, 32, 1, id="batched_32k_b32"),
+        pytest.param(65536, 50, True, 32, 1, id="batched_64k_b32"),
+        pytest.param(131072, 50, True, 32, 1, id="batched_128k_b32"),
+        pytest.param(262144, 50, True, 32, 1, id="batched_256k_b32"),
+        # Full B x ISL matrix requested: fill in b4/b16 at all four long ISLs, plus b8 at 128k/256k
+        # (b8 up to 64k and b32 already covered above/existing).
+        pytest.param(32768, 50, True, 4, 1, id="batched_32k_b4"),
+        pytest.param(65536, 50, True, 4, 1, id="batched_64k_b4"),
+        pytest.param(131072, 50, True, 4, 1, id="batched_128k_b4"),
+        pytest.param(262144, 50, True, 4, 1, id="batched_256k_b4"),
+        pytest.param(32768, 50, True, 16, 1, id="batched_32k_b16"),
+        pytest.param(65536, 50, True, 16, 1, id="batched_64k_b16"),
+        pytest.param(131072, 50, True, 16, 1, id="batched_128k_b16"),
+        pytest.param(262144, 50, True, 16, 1, id="batched_256k_b16"),
+        pytest.param(131072, 50, True, 8, 1, id="batched_128k_b8"),
+        pytest.param(262144, 50, True, 8, 1, id="batched_256k_b8"),
+        # 8k/16k matrix: b4/b16/b32 missing at these ISLs (b1=traced_8k/16k, b8 already defined above).
+        pytest.param(8192, 50, True, 4, 1, id="batched_8k_b4"),
+        pytest.param(16384, 50, True, 4, 1, id="batched_16k_b4"),
+        pytest.param(8192, 50, True, 16, 1, id="batched_8k_b16"),
+        pytest.param(16384, 50, True, 16, 1, id="batched_16k_b16"),
+        pytest.param(8192, 50, True, 32, 1, id="batched_8k_b32"),
+        pytest.param(16384, 50, True, 32, 1, id="batched_16k_b32"),
         # Per-user prefill is sequential, so the 64k TTFT (~357s) exceeds pytest.ini's 300s
         # default; give it a generous per-test timeout.
-        pytest.param(65536, 50, True, 8, 1, id="batched_64k_b8", marks=pytest.mark.timeout(900)),
+        pytest.param(65536, 50, True, 8, 1, id="batched_64k_b8"),
+        # --- Toward a 1M-token pool -----------------------------------------------------------
+        # B is restricted to {1,2,4,8,16,32} (model_config.py:733), so these move the ISL instead.
+        # All only reachable with QWEN_SDPA_BF8=1: bf8 paged KV is 5 KiB/token, not 10.
+        # 917504 tokens, two shapes:
+        pytest.param(28672, 50, True, 32, 1, id="pool_917k_b32"),
+        pytest.param(57344, 50, True, 16, 1, id="pool_917k_b16"),
+        # Fallbacks if 917504 does not fit: 786432, then 655360.
+        pytest.param(24576, 50, True, 32, 1, id="pool_786k_b32"),
+        pytest.param(20480, 50, True, 32, 1, id="pool_655k_b32"),
+        # --- Near-ceiling probes -------------------------------------------------------------
+        # The matrix only tested powers of two, so the KV ceiling is known to be in
+        # [524288, 1048576): every config at 524288 passed, every one at 1048576 OOM'd.
+        #
+        # Equal token count, different shape (both 458752). KV is identical; GDN state is not --
+        # 14 slots cost 214 MiB, 7 slots cost 107 MiB. If the ceiling is purely a token budget both
+        # behave the same; if slot count matters, b14 is the tighter of the two.
+        # Narrow the ceiling from below: 655360, then 786432.
+        # 917504 tokens (1.75x the bf16 ceiling of 524288). Only reachable with QWEN_SDPA_BF8=1,
+        # which stores the paged KV as bfloat8_b instead of bfloat16 -- 5 KiB/token instead of 10.
+        # Two shapes at the same token count, to separate the token budget from the slot cost.
     ],
 )
 def test_demo_text(

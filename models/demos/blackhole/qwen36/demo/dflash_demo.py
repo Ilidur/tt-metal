@@ -177,6 +177,13 @@ def _log_results(perf, prompt_len, stats, text):
         pytest.param(16384, 100, id="isl_16k"),
         pytest.param(24576, 100, id="isl_24k"),
         pytest.param(32768, 100, id="isl_32k"),
+        # 512-token generation. The 100/256-token cases spend most of their wall time in
+        # prefill, so the speculative steady state is only a minority of the measurement;
+        # 512 tokens amortises TTFT and makes accept-rate/tok-s the dominant signal.
+        pytest.param(128, 512, id="spec_128_512", marks=pytest.mark.timeout(1800)),
+        pytest.param(8192, 512, id="isl_8k_512", marks=pytest.mark.timeout(2400)),
+        pytest.param(16384, 512, id="isl_16k_512", marks=pytest.mark.timeout(2400)),
+        pytest.param(32768, 512, id="isl_32k_512", marks=pytest.mark.timeout(3000)),
     ],
 )
 def test_demo_dflash(mesh_device, device_params, seqlen, max_generated_tokens, reset_seeds, ensure_gc):
